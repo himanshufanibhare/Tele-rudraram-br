@@ -1,12 +1,16 @@
 import os
+from dotenv import load_dotenv
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from utils.wisun_network import WisunNetwork
 
-# Minimal test bot to verify your Telegram bot token and basic handlers.
-# Usage: set TELEGRAM_BOT_TOKEN environment variable, then run.
+# Load environment variables from .env file
+load_dotenv()
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "8695178265:AAEpxwqbwauW-85prGImWEHyd3TmCrtQVNk"
+# Minimal test bot to verify your Telegram bot token and basic handlers.
+# Usage: set TELEGRAM_BOT_TOKEN in .env file or as environment variable
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Initialize WiSUN network manager
 wisun = WisunNetwork()
