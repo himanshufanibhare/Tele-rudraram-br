@@ -22,3 +22,18 @@ def shell_command(cmd):
         return "Error: Command timed out"
     except Exception as e:
         return f"Error: {e}"
+
+
+def reboot_system():
+    """
+    Reboot the Raspberry Pi system
+    
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+    try:
+        # Use direct sudo reboot command
+        subprocess.Popen("sudo reboot", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, "🔄 System reboot initiated...\nThe Raspberry Pi will reboot now."
+    except Exception as e:
+        return False, f"⚠️ Error rebooting system: {e}"

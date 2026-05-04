@@ -5,6 +5,7 @@ import subprocess
 import json
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from utils.wisun_network import WisunNetwork
+from utils.helpers import reboot_system
 
 # Load environment variables from .env file
 load_dotenv()
@@ -50,6 +51,7 @@ def build_command_menu():
         BotCommand("coap", "Query CoAP endpoints"),
         BotCommand("connected_nodes", "Show connected nodes"),
         BotCommand("not_connected_nodes", "Show disconnected nodes"),
+        BotCommand("reboot", "Reboot Raspberry Pi"),
     ]
     
     return commands
@@ -186,6 +188,13 @@ def handle_coap(msg):
         markup.add(*row)
     
     bot.send_message(msg.chat.id, f"<b>CoAP Endpoints for {selected_ip}</b>\n\nSelect endpoint:", reply_markup=markup, parse_mode='HTML')
+
+
+@bot.message_handler(commands=['reboot'])
+def handle_reboot(msg):
+    """Reboot the Raspberry Pi system"""
+    success, message = reboot_system()
+    bot.send_message(msg.chat.id, message)
 
 
 @bot.callback_query_handler(func=lambda call: True)
