@@ -162,7 +162,7 @@ def handle_br(msg):
 
 @bot.message_handler(commands=['coap'])
 def handle_coap(msg):
-    """Show available CoAP endpoints"""
+    """Show available CoAP endpoints in 3-column grid"""
     user_id = msg.from_user.id
     
     if user_id not in user_selected_ip:
@@ -172,9 +172,18 @@ def handle_coap(msg):
     selected_ip = user_selected_ip[user_id]
     markup = InlineKeyboardMarkup()
     
-    # Add CoAP endpoint buttons from JSON config
+    # Add CoAP endpoint buttons in 3 columns
+    row = []
     for endpoint in COAP_ENDPOINTS:
-        markup.add(InlineKeyboardButton(endpoint['name'], callback_data=f"coap_{endpoint['endpoint']}"))
+        row.append(InlineKeyboardButton(endpoint['name'], callback_data=f"coap_{endpoint['endpoint']}"))
+        
+        if len(row) == 3:
+            markup.add(*row)
+            row = []
+    
+    # Add remaining buttons
+    if row:
+        markup.add(*row)
     
     bot.send_message(msg.chat.id, f"<b>CoAP Endpoints for {selected_ip}</b>\n\nSelect endpoint:", reply_markup=markup, parse_mode='HTML')
 
