@@ -1,0 +1,54 @@
+{
+    "coap_endpoints": [
+        {
+            "name": "Device Info",
+            "endpoint": "/info/all",
+            "description": "Get device information"
+        },
+        {
+            "name": "All Data",
+            "endpoint": "/allData",
+            "description": "Retrieve all sensor data"
+        },
+        {
+            "name": "SI7021",
+            "endpoint": "/si7021",
+            "description": "SI7021 temperature and humidity sensor"
+        },
+        {
+            "name": "Lux Data",
+            "endpoint": "/luxData",
+            "description": "Light intensity data"
+        },
+        {
+            "name": "LED On",
+            "endpoint": "/ledon",
+            "description": "Turn LED on"
+        },
+        {
+            "name": "LED Off",
+            "endpoint": "/ledoff",
+            "description": "Turn LED off"
+        },
+        {
+            "name": "Meter Param",
+            "endpoint": "/meterParam",
+            "description": "Meter parameters"
+        },
+        {
+            "name": "Sensor Status",
+            "endpoint": "/sensorStatus",
+            "description": "Current sensor status"
+        },
+        {
+            "name": "Reinit SI7021",
+            "endpoint": "/sensors/reinit_si7021",
+            "description": "Reinitialize SI7021 sensor"
+        },
+        {
+            "name": "Reinit VEML",
+            "endpoint": "/sensors/reinit_veml",
+            "description": "Reinitialize VEML sensor"
+        }
+    ]
+}

@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 import telebot
+import subprocess
+import json
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from utils.wisun_network import WisunNetwork
 
@@ -23,16 +25,37 @@ if TOKEN.startswith("<") or ":" not in TOKEN:
 
 bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
 
+# Store user selected IPs for CoAP commands
+user_selected_ip = {}
+
+# Load CoAP endpoints from JSON config
+def load_coap_endpoints():
+    """Load CoAP endpoints from JSON configuration file"""
+    try:
+        with open('config/coap_endpoints.json', 'r') as f:
+            data = json.load(f)
+            return data.get('coap_endpoints', [])
+    except Exception as e:
+        print(f"Error loading CoAP endpoints: {e}")
+        return []
+
+COAP_ENDPOINTS = load_coap_endpoints()
+
+# Build command menu dynamically from endpoints
+def build_command_menu():
+    """Build command menu with essential commands only"""
+    commands = [
+        BotCommand("start", "Get started"),
+        BotCommand("ip", "Select connected node IP"),
+        BotCommand("coap", "Query CoAP endpoints"),
+        BotCommand("connected_nodes", "Show connected nodes"),
+        BotCommand("not_connected_nodes", "Show disconnected nodes"),
+    ]
+    
+    return commands
+
 # Set command menu
-bot.set_my_commands([
-    BotCommand("start", "Get started"),
-    BotCommand("help", "Show all commands"),
-    BotCommand("connected_nodes", "Show connected nodes"),
-    BotCommand("not_connected_nodes", "Show disconnected nodes"),
-    BotCommand("detail", "Show details of pole"),
-    BotCommand("pole", "Control the pole"),
-    BotCommand("br", "Border Router control & status"),
-])
+bot.set_my_commands(build_command_menu())
 
 def print_getme():
     try:
@@ -61,6 +84,37 @@ def handle_help(msg):
     markup.add(InlineKeyboardButton("Border Router", callback_data="cmd_br"))
     
     bot.send_message(msg.chat.id, "Available Commands:", reply_markup=markup)
+
+
+@bot.message_handler(commands=['ip'])
+def handle_ip(msg):
+    """Show connected nodes as IP selector (3 columns, last 4 digits)"""
+    try:
+        connected, _, _ = wisun.get_connected_nodes()
+        
+        if not connected:
+            bot.reply_to(msg, "No connected nodes available.")
+            return
+        
+        markup = InlineKeyboardMarkup()
+        
+        # Add buttons in 3 columns
+        row = []
+        for node_name, ip in connected:
+            last_4_digits = ip[-4:]
+            row.append(InlineKeyboardButton(last_4_digits, callback_data=f"ip_{ip}"))
+            
+            if len(row) == 3:
+                markup.add(*row)
+                row = []
+        
+        # Add remaining buttons
+        if row:
+            markup.add(*row)
+        
+        bot.send_message(msg.chat.id, f"<b>Select IP ({len(connected)} connected)</b>", reply_markup=markup, parse_mode='HTML')
+    except Exception as e:
+        bot.reply_to(msg, f"Error retrieving connected nodes: {e}")
 
 
 @bot.message_handler(commands=['ping'])
@@ -106,9 +160,77 @@ def handle_br(msg):
     bot.reply_to(msg, "Border Router status (implementation pending)")
 
 
+@bot.message_handler(commands=['coap'])
+def handle_coap(msg):
+    """Show available CoAP endpoints"""
+    user_id = msg.from_user.id
+    
+    if user_id not in user_selected_ip:
+        bot.reply_to(msg, "Please select an IP first using /ip command")
+        return
+    
+    selected_ip = user_selected_ip[user_id]
+    markup = InlineKeyboardMarkup()
+    
+    # Add CoAP endpoint buttons from JSON config
+    for endpoint in COAP_ENDPOINTS:
+        markup.add(InlineKeyboardButton(endpoint['name'], callback_data=f"coap_{endpoint['endpoint']}"))
+    
+    bot.send_message(msg.chat.id, f"<b>CoAP Endpoints for {selected_ip}</b>\n\nSelect endpoint:", reply_markup=markup, parse_mode='HTML')
+
+
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     """Handle inline button clicks"""
+    user_id = call.from_user.id
+    
+    # Handle IP selection
+    if call.data.startswith("ip_"):
+        selected_ip = call.data[3:]  # Remove "ip_" prefix
+        user_selected_ip[user_id] = selected_ip
+        bot.send_message(call.message.chat.id, f"✅ Selected IP: <b>{selected_ip}</b>\n\nNow use /coap to query endpoints", parse_mode='HTML')
+        bot.answer_callback_query(call.id, "IP selected!")
+        return
+    
+    # Handle CoAP endpoint queries
+    if call.data.startswith("coap_"):
+        if user_id not in user_selected_ip:
+            bot.send_message(call.message.chat.id, "No IP selected. Use /ip first.")
+            bot.answer_callback_query(call.id)
+            return
+        
+        endpoint_path = call.data[5:]  # Remove "coap_" prefix to get endpoint path
+        selected_ip = user_selected_ip[user_id]
+        
+        # Find endpoint name for display
+        endpoint_name = endpoint_path
+        for ep in COAP_ENDPOINTS:
+            if ep['endpoint'] == endpoint_path:
+                endpoint_name = ep['name']
+                break
+        
+        # Execute CoAP command
+        coap_url = f"coap://[{selected_ip}]:5683{endpoint_path}"
+        cmd = f"coap-client-notls -m get {coap_url}"
+        
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            response = result.stdout if result.stdout else result.stderr
+            
+            if not response:
+                response = "No response from endpoint"
+            
+            # Send response back to bot
+            bot.send_message(call.message.chat.id, f"<b>CoAP Response: {endpoint_name}</b>\n\n<code>{response}</code>", parse_mode='HTML')
+        except subprocess.TimeoutExpired:
+            bot.send_message(call.message.chat.id, f"❌ Timeout: CoAP request to {endpoint_name} took too long")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ Error: {e}")
+        
+        bot.answer_callback_query(call.id)
+        return
+    
+    # Handle other commands
     if call.data == "cmd_start":
         bot.send_message(call.message.chat.id, "Bot is working ✅\nYour id: {}".format(call.from_user.id))
     elif call.data == "cmd_connected":
