@@ -1,0 +1,15 @@
+[Unit]
+Description=WiSUN Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=wisun
+WorkingDirectory=/home/wisun/TTDF/Telegram
+Environment="PATH=/home/wisun/TTDF/Telegram/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/wisun/TTDF/Telegram/venv/bin/python3 /home/wisun/TTDF/Telegram/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -425,19 +425,8 @@ def handle_status(msg):
 
 @bot.message_handler(commands=['monitor'])
 def handle_monitor(msg):
-    """Show or refresh Raspberry Pi monitoring dashboard."""
-    key = (msg.from_user.id, msg.chat.id)
-    existing_message_id = monitor_message_state.get(key)
-
+    """Send a new Raspberry Pi monitoring dashboard message."""
     try:
-        if existing_message_id:
-            try:
-                show_monitor_dashboard(msg.chat.id, msg.from_user.id, existing_message_id)
-                return
-            except Exception:
-                # Existing message may be gone; recreate dashboard.
-                pass
-
         show_monitor_dashboard(msg.chat.id, msg.from_user.id)
     except Exception as e:
         bot.reply_to(msg, f"Monitor error: {e}")
