@@ -3,6 +3,9 @@ from dotenv import load_dotenv
 import telebot
 import subprocess
 import json
+import re
+import shutil
+import html
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from utils.wisun_network import WisunNetwork
 from utils.helpers import reboot_system
@@ -28,6 +31,7 @@ bot = telebot.TeleBot(TOKEN, parse_mode='HTML')
 
 # Store user selected IPs for CoAP commands
 user_selected_ip = {}
+monitor_message_state = {}
 
 # Load CoAP endpoints from JSON config
 def load_coap_endpoints():
@@ -42,15 +46,321 @@ def load_coap_endpoints():
 
 COAP_ENDPOINTS = load_coap_endpoints()
 
+
+def run_linux_command(command, timeout=3):
+    """Run a shell command safely and return (ok, output_or_error)."""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        err = (result.stderr or result.stdout).strip()
+        return False, err or "Command failed"
+    except subprocess.TimeoutExpired:
+        return False, "Command timeout"
+    except Exception as e:
+        return False, str(e)
+
+
+def get_cpu_temp():
+    """Read CPU temperature via vcgencmd."""
+    if not shutil.which("vcgencmd"):
+        return "N/A (vcgencmd missing)"
+
+    ok, output = run_linux_command("vcgencmd measure_temp")
+    if not ok:
+        return f"N/A ({output})"
+
+    match = re.search(r"temp=([0-9.]+)'C", output)
+    if match:
+        return f"{match.group(1)}°C"
+
+    return "N/A (temperature unavailable)"
+
+
+def get_cpu_usage():
+    """Read current CPU usage percentage."""
+    ok, output = run_linux_command(
+        "top -bn2 | grep \"Cpu(s)\" | tail -n1 | awk '{printf(\"%.1f%%\\n\", 100 - $8)}'",
+        timeout=8,
+    )
+    if ok and output:
+        return output
+
+    # Fallback parser for top variants where idle column is not at fixed field index.
+    ok, output = run_linux_command(
+        "top -bn2 | grep \"Cpu(s)\" | tail -n1 | awk -F',' '{for(i=1;i<=NF;i++){if($i ~ / id/){gsub(/[^0-9.]/,\"\",$i); if($i!=\"\"){printf(\"%.1f%%\", 100 - $i); exit}}}}'",
+        timeout=8,
+    )
+    if ok and output:
+        return output
+    return "N/A"
+
+
+def get_ram_usage():
+    """Read RAM usage from free -m."""
+    ok, output = run_linux_command("free -m")
+    if not ok:
+        return "N/A"
+
+    for line in output.splitlines():
+        if line.lower().startswith("mem:"):
+            parts = line.split()
+            if len(parts) >= 3:
+                total = int(parts[1])
+                used = int(parts[2])
+                pct = (used / total) * 100 if total else 0
+                return f"{used}MB/{total}MB ({pct:.1f}%)"
+
+    return "N/A"
+
+
+def get_disk_usage():
+    """Read root filesystem usage."""
+    ok, output = run_linux_command("df -h /")
+    if not ok:
+        return "N/A"
+
+    lines = output.splitlines()
+    if len(lines) >= 2:
+        parts = lines[1].split()
+        if len(parts) >= 5:
+            size = parts[1]
+            used = parts[2]
+            pct = parts[4]
+            return f"{used}/{size} ({pct})"
+
+    return "N/A"
+
+
+def get_uptime():
+    """Read uptime in human-readable format."""
+    ok, output = run_linux_command("uptime -p")
+    if ok and output:
+        return output.replace("up ", "", 1)
+    return "N/A"
+
+
+def get_ip_address():
+    """Get primary IPv4 address."""
+    ok, output = run_linux_command("hostname -I | awk '{print $1}'")
+    if ok and output:
+        return output
+    return "N/A"
+
+
+def get_active_network_interface():
+    """Get currently active default-route network interface."""
+    ok, output = run_linux_command("ip route get 8.8.8.8 | awk '{for(i=1;i<=NF;i++) if($i==\"dev\"){print $(i+1); exit}}'")
+    if ok and output:
+        return output.splitlines()[0].strip()
+
+    ok, output = run_linux_command("ip route | grep default | awk '{print $5}'")
+    if ok and output:
+        return output.splitlines()[0].strip()
+
+    return "unknown"
+
+
+def get_wifi_status():
+    """Get WiFi SSID from iwgetid."""
+    active_interface = get_active_network_interface()
+
+    ok, output = run_linux_command("iwgetid -r")
+    if "not found" in output.lower():
+        return "N/A (iwgetid missing)"
+
+    if active_interface.startswith("wlan"):
+        if ok and output:
+            return f"{output} ({active_interface})"
+        return f"N/A ({active_interface})"
+
+    if active_interface and active_interface != "unknown":
+        return f"N/A ({active_interface})"
+
+    if ok and output:
+        return f"{output} (wlan0)"
+
+    return "N/A (unknown)"
+
+
+def get_monitor_text():
+    """Build the monitor dashboard message text."""
+    ip_address = get_ip_address()
+    cpu_temp = get_cpu_temp()
+    cpu_usage = get_cpu_usage()
+    ram_usage = get_ram_usage()
+    disk_usage = get_disk_usage()
+    uptime = get_uptime()
+    wifi_name = get_wifi_status()
+
+    ip_address = html.escape(ip_address)
+    cpu_temp = html.escape(cpu_temp)
+    cpu_usage = html.escape(cpu_usage)
+    ram_usage = html.escape(ram_usage)
+    disk_usage = html.escape(disk_usage)
+    uptime = html.escape(uptime)
+    wifi_name = html.escape(wifi_name)
+
+    return (
+        "<b>🖥 Raspberry Pi Monitor</b>\n\n"
+        "<pre>"
+        f"IP        : {ip_address}\n"
+        f"CPU Temp  : {cpu_temp}\n"
+        f"CPU Usage : {cpu_usage}\n"
+        f"RAM Usage : {ram_usage}\n"
+        f"Disk Usage: {disk_usage}\n"
+        f"Uptime    : {uptime}\n"
+            f"Network   : {wifi_name}"
+        "</pre>"
+    )
+
+
+def monitor_keyboard():
+    """Inline keyboard for monitor dashboard actions."""
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔄 Refresh", callback_data="monitor_refresh"))
+    return markup
+
+
+def show_monitor_dashboard(chat_id, user_id, message_id=None):
+    """Render or refresh monitor dashboard in a single message."""
+    text = get_monitor_text()
+    reply_markup = monitor_keyboard()
+    key = (user_id, chat_id)
+
+    if message_id:
+        bot.edit_message_text(
+            text,
+            chat_id,
+            message_id,
+            reply_markup=reply_markup,
+            parse_mode='HTML',
+        )
+        monitor_message_state[key] = message_id
+        return message_id
+
+    sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode='HTML')
+    monitor_message_state[key] = sent.message_id
+    return sent.message_id
+
+
+def build_ip_selection_keyboard(callback_prefix):
+    """Build a 3-column keyboard for connected WiSUN IPv6 nodes."""
+    connected, _, _ = wisun.get_connected_nodes()
+
+    if not connected:
+        return None
+
+    markup = InlineKeyboardMarkup()
+    row = []
+
+    for node_name, ip in connected:
+        last_4_digits = ip[-4:]
+        row.append(InlineKeyboardButton(last_4_digits, callback_data=f"{callback_prefix}{ip}"))
+
+        if len(row) == 3:
+            markup.add(*row)
+            row = []
+
+    if row:
+        markup.add(*row)
+
+    return markup
+
+
+def build_status_coap_keyboard(back_callback="status_back_to_ips"):
+    """Keyboard for CoAP endpoint selection inside /status."""
+    markup = InlineKeyboardMarkup()
+    row = []
+
+    for endpoint in COAP_ENDPOINTS:
+        row.append(InlineKeyboardButton(endpoint['name'], callback_data=f"coap_{endpoint['endpoint']}"))
+
+        if len(row) == 3:
+            markup.add(*row)
+            row = []
+
+    if row:
+        markup.add(*row)
+
+    markup.add(InlineKeyboardButton("Back", callback_data=back_callback))
+    return markup
+
+
+def show_status_ip_menu(chat_id, message_id=None):
+    """Display the /status IP selector menu."""
+    markup = build_ip_selection_keyboard("status_ip_")
+
+    if not markup:
+        text = "No connected nodes available."
+        if message_id:
+            bot.edit_message_text(text, chat_id, message_id)
+        else:
+            bot.send_message(chat_id, text)
+        return False
+
+    text = "<b>Select IP for status</b>\n\nChoose a connected IPv6 node:"
+    if message_id:
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode='HTML')
+    else:
+        bot.send_message(chat_id, text, reply_markup=markup, parse_mode='HTML')
+
+    return True
+
+
+def show_status_selected_menu(call, selected_ip):
+    """Show CoAP endpoints immediately after selecting an IP in /status."""
+    status_text = (
+        f"<b>CoAP Endpoints for selected IP</b>\n\n"
+        f"IPv6: <code>{selected_ip}</code>\n\n"
+        f"Select a CoAP endpoint:"
+    )
+    bot.edit_message_text(
+        status_text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=build_status_coap_keyboard(),
+        parse_mode='HTML',
+    )
+
+
+def show_status_coap_menu(call):
+    """Show CoAP endpoints from the /status flow."""
+    selected_ip = user_selected_ip.get(call.from_user.id)
+    if not selected_ip:
+        bot.edit_message_text(
+            "Please select an IP first.",
+            call.message.chat.id,
+            call.message.message_id,
+        )
+        return
+
+    text = f"<b>CoAP Endpoints for {selected_ip}</b>\n\nSelect endpoint:"
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=build_status_coap_keyboard("status_back_to_ips"),
+        parse_mode='HTML',
+    )
+
 # Build command menu dynamically from endpoints
 def build_command_menu():
     """Build command menu with essential commands only"""
     commands = [
         BotCommand("start", "Get started"),
         BotCommand("ip", "Select connected node IP"),
+        # BotCommand("status", "Show IP and CoAP status menu"),
+        # BotCommand("monitor", "Open Raspberry Pi monitor"),
         BotCommand("coap", "Query CoAP endpoints"),
         BotCommand("connected_nodes", "Show connected nodes"),
-        BotCommand("not_connected_nodes", "Show disconnected nodes"),
+        BotCommand("disconnected_nodes", "Show disconnected nodes"),
         BotCommand("reboot", "Reboot Raspberry Pi"),
     ]
     
@@ -92,31 +402,45 @@ def handle_help(msg):
 def handle_ip(msg):
     """Show connected nodes as IP selector (3 columns, last 4 digits)"""
     try:
-        connected, _, _ = wisun.get_connected_nodes()
-        
-        if not connected:
+        markup = build_ip_selection_keyboard("ip_")
+
+        if not markup:
             bot.reply_to(msg, "No connected nodes available.")
             return
-        
-        markup = InlineKeyboardMarkup()
-        
-        # Add buttons in 3 columns
-        row = []
-        for node_name, ip in connected:
-            last_4_digits = ip[-4:]
-            row.append(InlineKeyboardButton(last_4_digits, callback_data=f"ip_{ip}"))
-            
-            if len(row) == 3:
-                markup.add(*row)
-                row = []
-        
-        # Add remaining buttons
-        if row:
-            markup.add(*row)
-        
+
+        connected, _, _ = wisun.get_connected_nodes()
         bot.send_message(msg.chat.id, f"<b>Select IP ({len(connected)} connected)</b>", reply_markup=markup, parse_mode='HTML')
     except Exception as e:
         bot.reply_to(msg, f"Error retrieving connected nodes: {e}")
+
+
+@bot.message_handler(commands=['status'])
+def handle_status(msg):
+    """Show IP selector that leads to status and CoAP actions."""
+    try:
+        show_status_ip_menu(msg.chat.id)
+    except Exception as e:
+        bot.reply_to(msg, f"Error retrieving status menu: {e}")
+
+
+@bot.message_handler(commands=['monitor'])
+def handle_monitor(msg):
+    """Show or refresh Raspberry Pi monitoring dashboard."""
+    key = (msg.from_user.id, msg.chat.id)
+    existing_message_id = monitor_message_state.get(key)
+
+    try:
+        if existing_message_id:
+            try:
+                show_monitor_dashboard(msg.chat.id, msg.from_user.id, existing_message_id)
+                return
+            except Exception:
+                # Existing message may be gone; recreate dashboard.
+                pass
+
+        show_monitor_dashboard(msg.chat.id, msg.from_user.id)
+    except Exception as e:
+        bot.reply_to(msg, f"Monitor error: {e}")
 
 
 @bot.message_handler(commands=['ping'])
@@ -134,7 +458,7 @@ def handle_connected_nodes(msg):
         bot.reply_to(msg, f"Error retrieving connected nodes: {e}")
 
 
-@bot.message_handler(commands=['disconnected_nodes', 'not_connected_nodes'])
+@bot.message_handler(commands=['disconnected_nodes'])
 def handle_disconnected_nodes(msg):
     """Show only disconnected WiSUN network nodes"""
     try:
@@ -197,7 +521,7 @@ def handle_reboot(msg):
     bot.send_message(msg.chat.id, message)
 
 
-@bot.callback_query_handler(func=lambda call: True)
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("display", "camera", "screen", "status", "coap", "ip", "cmd", "monitor")))
 def callback_handler(call):
     """Handle inline button clicks"""
     user_id = call.from_user.id
@@ -247,6 +571,40 @@ def callback_handler(call):
         
         bot.answer_callback_query(call.id)
         return
+
+    if call.data.startswith("status_"):
+        if call.data.startswith("status_ip_"):
+            selected_ip = call.data[len("status_ip_"):]
+            user_selected_ip[user_id] = selected_ip
+            show_status_selected_menu(call, selected_ip)
+            bot.answer_callback_query(call.id, "IP selected!")
+            return
+
+        if call.data == "status_back_to_ips":
+            show_status_ip_menu(call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id, "Back to IP selection")
+            return
+
+    if call.data.startswith("monitor_"):
+        if call.data == "monitor_refresh":
+            key = (call.from_user.id, call.message.chat.id)
+            monitor_message_state[key] = call.message.message_id
+            try:
+                show_monitor_dashboard(
+                    call.message.chat.id,
+                    call.from_user.id,
+                    call.message.message_id,
+                )
+                bot.answer_callback_query(call.id, "Stats refreshed")
+            except telebot.apihelper.ApiTelegramException as e:
+                err_text = str(e)
+                if "message is not modified" in err_text:
+                    bot.answer_callback_query(call.id, "Already up to date")
+                else:
+                    bot.answer_callback_query(call.id, "Refresh failed")
+            except Exception:
+                bot.answer_callback_query(call.id, "Refresh failed")
+            return
     
     # Handle other commands
     if call.data == "cmd_start":
